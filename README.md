@@ -154,7 +154,7 @@ A commit is a hash string representing the state of a repository at a certain po
 | 特性 | 说明 |
 |:---|:---|
 | 🔐 KernelSU 变体 | 支持 SukiSU / BakaSU / FinaSU 变体，构建时按需选择 |
-| 🔀 构建通道 | 正式：对齐上游最新 GitHub Release（标签提交 + 同版本管理器）；最新：跟随上游默认分支 HEAD（管理器取最新可用构建） |
+| 🔀 构建通道 | 正式：上游最新**正式版** Release（标签提交 + 同版本管理器），上游只有预发布版时改用官方默认分支最新上传构建；最新：锁定默认分支 HEAD，管理器取与 HEAD 版本一致的最新构建 |
 | 🙈 SUSFS | 内核级隐藏，配合 KSU 完成环境伪装 |
 | 💾 ZRAM LZ4 | ZRAM 压缩算法补丁 |
 | 🛡️ BBG 基带保护 | BBG（BaseBand Guard）补丁，保护基带分区，防止基带被意外擦除 |
@@ -174,9 +174,9 @@ A commit is a hash string representing the state of a repository at a certain po
    - `android_version` / `kernel_version` / `sub_level` / `os_patch_level`
    - `ksu_variant`：KernelSU 变体（SukiSU / BakaSU / FinaSU）
    - `build_channel`：构建通道
-     - `正式 (Release)`：使用上游最新 GitHub Release 的管理器 APK，内核检出该 Release 标签的同一提交，版本严格一致
-     - `最新 (HEAD)`：内核跟随上游默认分支 HEAD，管理器取最新可用构建（SukiSU / BakaSU 用官方 CI 构建，FinaSU 用最新 Release）
-     - 上游没有可用的带 APK 的 Release 时，正式通道会自动回退到最新通道并在日志中提示
+     - `正式 (Release)`：使用上游最新**正式版** Release（`prerelease=false`）的管理器 APK，内核检出该 Release 标签的同一提交，版本严格一致；上游只有 rc/预发布版时（如 BakaSU），改用官方默认分支最新上传构建并锁定该提交
+     - `最新 (HEAD)`：内核锁定默认分支 HEAD，管理器取与 HEAD 版本号一致的最新构建（不限分支，SukiSU / BakaSU 用官方 CI 构建，FinaSU 用最新 Release），避免内核与管理器版本错位
+     - 两个通道的日志与运行摘要（Summary）都会打印实际选用的通道、提交与管理器版本
    - 功能开关：`enable_susfs`、`use_zram`、`use_bbg`、`use_net_enhance`、`use_kpm`、`skip_incompatible` 等 
 4. 构建完成后，在本次运行页面下载 **Artifacts**：
    - `AnyKernel3.zip` —— 卡刷包（推荐，配合自定义 Recovery 或 KSU 刷入）
