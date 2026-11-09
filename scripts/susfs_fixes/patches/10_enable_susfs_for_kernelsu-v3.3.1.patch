@@ -986,7 +986,7 @@ index 459f99f9..6cd0659d 100644
 +}
 \ No newline at end of file
 diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
-index f5cd7bf2..e18c2b2f 100644
+index f5cd7bf..f1e2117 100644
 --- a/kernel/feature/sucompat.c
 +++ b/kernel/feature/sucompat.c
 @@ -1,6 +1,3 @@
@@ -1053,7 +1053,7 @@ index f5cd7bf2..e18c2b2f 100644
      pr_info("su_compat: set to %d\n", enable);
      return 0;
  }
-@@ -63,217 +76,199 @@ static void __user *userspace_stack_buffer(const void *d, size_t len)
+@@ -63,217 +76,194 @@ static void __user *userspace_stack_buffer(const void *d, size_t len)
      return copy_to_user(p, d, len) ? NULL : p;
  }
  
@@ -1066,36 +1066,17 @@ index f5cd7bf2..e18c2b2f 100644
 -    return userspace_stack_buffer(ksud_path, sizeof(ksud_path));
 +    return userspace_stack_buffer(sh_path, sizeof(sh_path));
  }
--
+ 
 -static char __user *empty_user_path(void)
- {
--    return userspace_stack_buffer("", sizeof(""));
--}
-+    static const char sh_path[] = "/system/bin/sh";
- 
--static const char su_path[] = SU_PATH;
-+    return userspace_stack_buffer(sh_path, sizeof(sh_path));
-+}
- 
--static bool is_ksud_exists()
 +static char __user *ksud_user_path(void)
  {
--    struct path path;
+-    return userspace_stack_buffer("", sizeof(""));
 +    static const char ksud_path[] = KSUD_PATH;
- 
--    if (kern_path(KSUD_PATH, 0, &path) < 0) {
--        return false;
--    }
--    path_put(&path);
--    return true;
++
 +    return userspace_stack_buffer(ksud_path, sizeof(ksud_path));
  }
  
--long ksu_handle_faccessat_sucompat(int orig_nr, struct pt_regs *regs)
--{
--    const char __user **filename_user, *orig_filename;
--    long ret;
--    const struct cred *old_cred;
+-static const char su_path[] = SU_PATH;
 +/*
 + * return 0 -> No further checks should be required afterwards
 + * return non-zero -> Further checks should be continued afterwards
@@ -1103,15 +1084,34 @@ index f5cd7bf2..e18c2b2f 100644
 +int ksu_handle_execveat_init(struct filename *filename, struct user_arg_ptr *argv_user, struct user_arg_ptr *envp_user) {
 +    int ret;
  
--    if (!ksu_is_allow_uid_for_current(current_uid().val)) {
--        goto do_orig_facessat;
--    }
+-static bool is_ksud_exists()
+-{
+-    struct path path;
 +    if (current->pid == 1)
 +        return -EINVAL;
-+
+ 
+-    if (kern_path(KSUD_PATH, 0, &path) < 0) {
+-        return false;
+-    }
+-    path_put(&path);
+-    return true;
+-}
 +    if (!is_init(get_current_cred()))
 +        return -EINVAL;
  
+-long ksu_handle_faccessat_sucompat(int orig_nr, struct pt_regs *regs)
+-{
+-    const char __user **filename_user, *orig_filename;
+-    long ret;
+-    const struct cred *old_cred;
++    if (unlikely(!strcmp(filename->name, KSUD_PATH))) {
++        const char __user *argv_user_ptr = get_user_arg_ptr(*argv_user, 0);
++        struct ksu_sulog_pending_event *pending_sucompat = NULL;
+ 
+-    if (!ksu_is_allow_uid_for_current(current_uid().val)) {
+-        goto do_orig_facessat;
+-    }
+-
 -    filename_user = (const char __user **)&PT_REGS_PARM2(regs);
 -
 -    char path[sizeof(su_path) + 1];
@@ -1127,10 +1127,6 @@ index f5cd7bf2..e18c2b2f 100644
 -            ret = ksu_syscall_table[orig_nr](regs);
 -            revert_creds(old_cred);
 -            *filename_user = orig_filename;
-+    if (unlikely(!strcmp(filename->name, KSUD_PATH))) {
-+        const char __user *argv_user_ptr = get_user_arg_ptr(*argv_user, 0);
-+        struct ksu_sulog_pending_event *pending_sucompat = NULL;
-+
 +        pr_info("hook_manager: escape to root for init executing ksud: %d\n", current->pid);
 +        pending_sucompat = ksu_sulog_capture_sucompat(filename->name, argv_user, GFP_KERNEL);
 +        ret = escape_to_root_for_init();
@@ -1197,12 +1193,12 @@ index f5cd7bf2..e18c2b2f 100644
 +#else
 +        ret = ksu_adb_root_handle_execveat(filename->name, (void ***)&envp_user->ptr.native);
 +#endif
-+
-+    if (ret)
-+        pr_err("adb root failed: %d\n", ret);
  
 -do_orig_stat:
 -    return ksu_syscall_table[orig_nr](regs);
++    if (ret)
++        pr_err("adb root failed: %d\n", ret);
++
 +    return ret;
  }
  
