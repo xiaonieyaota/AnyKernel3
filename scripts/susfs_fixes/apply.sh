@@ -92,6 +92,135 @@ verify_finasu_native_susfs() {
   echo "FinaSU 原生 SUSFS 集成校验通过"
 }
 
+apply_official_kernelsu_susfs() {
+  local KSU_DIR="$KERNEL_ROOT/KernelSU"
+  local UPSTREAM_PATCH="$SUSFS4KSU/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+  local RELEASE_PATCH="$SCRIPT_DIR/patches/10_enable_susfs_for_kernelsu-v3.3.1.patch"
+  local KSU_TAG=""
+  local DRIVER_PATCH="$UPSTREAM_PATCH"
+
+  if [ ! -d "$KSU_DIR" ] || [ ! -f "$UPSTREAM_PATCH" ]; then
+    echo "::error::官方 KernelSU 或 SUSFS 驱动侧补丁缺失: $UPSTREAM_PATCH" >&2
+    exit 1
+  fi
+  if [ ! -f "$RELEASE_PATCH" ]; then
+    echo "::error::官方 KernelSU v3.3.1 SUSFS 兼容补丁缺失: $RELEASE_PATCH" >&2
+    exit 1
+  fi
+
+  if KSU_TAG=$(git -C "$KSU_DIR" describe --tags --exact-match HEAD 2>/dev/null); then
+    echo "官方 KernelSU 当前检出标签: $KSU_TAG"
+  fi
+  if [ "$KSU_TAG" = "v3.3.1" ]; then
+    DRIVER_PATCH="$RELEASE_PATCH"
+  fi
+
+  if ! (cd "$KSU_DIR" && patch -p1 --dry-run < "$DRIVER_PATCH" >/dev/null 2>&1); then
+    if [ "$DRIVER_PATCH" = "$RELEASE_PATCH" ]; then
+      DRIVER_PATCH="$UPSTREAM_PATCH"
+    else
+      DRIVER_PATCH="$RELEASE_PATCH"
+    fi
+    if ! (cd "$KSU_DIR" && patch -p1 --dry-run < "$DRIVER_PATCH" >/dev/null 2>&1); then
+      echo "::error::官方 KernelSU SUSFS 驱动侧补丁无法应用于当前源码" >&2
+      exit 1
+    fi
+  fi
+
+  echo "应用官方 KernelSU 的 SUSFS 驱动侧补丁: $(basename "$DRIVER_PATCH")"
+  (cd "$KSU_DIR" && patch -p1 --no-backup-if-mismatch < "$DRIVER_PATCH")
+}
+
+apply_kernelsu_next_susfs() {
+  local KSU_DIR="$KERNEL_ROOT/KernelSU"
+  local NEXT_TAG=""
+  local NEXT_PATCH="$SCRIPT_DIR/patches/10_enable_susfs_for_kernelsu-next-dev.patch"
+  local RELEASE_PATCH="$SCRIPT_DIR/patches/10_enable_susfs_for_kernelsu-next-v3.4.2.patch"
+
+  if [ ! -d "$KSU_DIR" ]; then
+    echo "::error::KernelSU-Next 源码目录缺失: $KSU_DIR" >&2
+    exit 1
+  fi
+  if [ ! -f "$NEXT_PATCH" ] || [ ! -f "$RELEASE_PATCH" ]; then
+    echo "::error::KernelSU-Next SUSFS 兼容补丁缺失" >&2
+    exit 1
+  fi
+
+  if NEXT_TAG=$(git -C "$KSU_DIR" describe --tags --exact-match HEAD 2>/dev/null); then
+    echo "KernelSU-Next 当前检出标签: $NEXT_TAG"
+  fi
+  if [ "$NEXT_TAG" = "v3.4.2" ]; then
+    NEXT_PATCH="$RELEASE_PATCH"
+  fi
+
+  if ! (cd "$KSU_DIR" && patch -p1 --dry-run < "$NEXT_PATCH" >/dev/null 2>&1); then
+    if [ "$NEXT_PATCH" = "$RELEASE_PATCH" ]; then
+      NEXT_PATCH="$SCRIPT_DIR/patches/10_enable_susfs_for_kernelsu-next-dev.patch"
+    else
+      NEXT_PATCH="$RELEASE_PATCH"
+    fi
+    if ! (cd "$KSU_DIR" && patch -p1 --dry-run < "$NEXT_PATCH" >/dev/null 2>&1); then
+      echo "::error::KernelSU-Next SUSFS 兼容补丁无法应用于当前源码" >&2
+      exit 1
+    fi
+  fi
+
+  echo "应用 KernelSU-Next SUSFS 兼容补丁: $(basename "$NEXT_PATCH")"
+  (cd "$KSU_DIR" && patch -p1 --no-backup-if-mismatch < "$NEXT_PATCH")
+}
+
+# 内核侧主补丁 50_add 在 fs/exec.c 里以
+#   #ifndef KSU_NO_PREINIT
+#   extern int ksu_setup_preinit_file(...);
+#   extern int ksu_preinit_handle_post_execveat(...);
+#   #endif
+# 声明两个 preinit 入口，并在 do_execveat_common 内按 pid==1 调用。
+# 这两个函数由驱动侧 10_enable 补丁的 kernel/preinit/preinit.c 段提供；而该段只在
+# 上游存在 kernel/preinit/ 目录时才可应用：
+#   - 官方 KernelSU / KernelSU-Next 的 dev(main) HEAD 有 preinit，正常注入；
+#   - v3.3.1 与 Next v3.4.2 尚无 preinit 目录，10_enable 的该段被跳过，
+#     于是 KSU_NO_PREINIT 从未定义、两个符号既无声明也无定义 ——
+#     fs/exec.c 报 implicit-function-declaration，链接期报 undefined symbol。
+# 这里按「驱动是否存在 preinit 实现」决定是否给 KSU_NO_PREINIT，
+# 使主补丁与驱动保持同一形态，而不是无条件补桩。
+ensure_preinit_guard() {
+  local KSU_DIR="$KERNEL_ROOT/KernelSU"
+  local KSU_KERNEL="$KSU_DIR/kernel"
+  local KBUILD="$KSU_KERNEL/Kbuild"
+
+  if [ ! -f "$KBUILD" ]; then
+    echo "::warning::未找到驱动 Kbuild，跳过 preinit 守卫处理: $KBUILD"
+    return 0
+  fi
+
+  # 驱动已提供 preinit 实现：保持主补丁的 pid==1 前置会话逻辑
+  if [ -f "$KSU_KERNEL/preinit/preinit.c" ] \
+    && grep -qE '(^|[^a-zA-Z0-9_])ksu_setup_preinit_file[[:space:]]*\(' "$KSU_KERNEL/preinit/preinit.c"; then
+    if grep -q 'KSU_NO_PREINIT' "$KBUILD"; then
+      echo "驱动有 preinit 目录，但 Kbuild 会在缺少 UAPI 头时自行定义 KSU_NO_PREINIT（由驱动决定）"
+    else
+      echo "驱动已提供 preinit 实现，主补丁保留 preinit 会话处理"
+    fi
+    return 0
+  fi
+
+  if grep -q 'KSU_NO_PREINIT' "$KBUILD"; then
+    echo "驱动未提供 preinit 实现，且 Kbuild 已自行定义 KSU_NO_PREINIT"
+    return 0
+  fi
+
+  # 无条件写入：Kbuild 的 KSU_NO_PREINIT 由驱动自身负责（存在 preinit 时
+  # Kbuild 会按 KSU_UAPI_INC 有无自行决定），此处仅补齐缺失的驱动形态
+  printf '\n# injected by GKI SUSFS: driver has no preinit implementation,\n# keep the 50_add exec hooks from referencing absent preinit symbols\nccflags-y += -DKSU_NO_PREINIT\n' >> "$KBUILD"
+
+  if grep -q '^ccflags-y += -DKSU_NO_PREINIT$' "$KBUILD"; then
+    echo "驱动无 preinit 实现，已为 Kbuild 注入 -DKSU_NO_PREINIT（主补丁将跳过 preinit 钩子）"
+  else
+    echo "::error::向 $KBUILD 注入 KSU_NO_PREINIT 失败" >&2
+    exit 1
+  fi
+}
+
 case "$KSU_VARIANT" in
   "SukiSU"|"BakaSU")
     echo "SukiSU/BakaSU 使用内置 SUSFS 支持"
@@ -99,6 +228,16 @@ case "$KSU_VARIANT" in
   "FinaSU")
     echo "FinaSU 使用树内原生 SUSFS 集成（驱动侧不打补丁，形态同 SukiSU/BakaSU）"
     verify_finasu_native_susfs
+    ;;
+  "KernelSU")
+    echo "官方 KernelSU 使用 GitLab SUSFS 手工钩子模型"
+    apply_official_kernelsu_susfs
+    ensure_preinit_guard
+    ;;
+  "KernelSU-Next")
+    echo "KernelSU-Next 使用 GitLab SUSFS 手工钩子模型（含 Next 兼容补丁）"
+    apply_kernelsu_next_susfs
+    ensure_preinit_guard
     ;;
 esac
 

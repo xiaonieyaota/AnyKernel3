@@ -2,3 +2,13 @@
 # lines and kernel-style tab indentation.
 security_patch/*.patch -whitespace
 scripts/sukisu_compat/*.patch -whitespace
+
+# SUSFS driver compatibility patches must stay byte-identical to the patches
+# generated from the merged trees. Declaring them text/binary-safe prevents
+# core.autocrlf=true checkouts (Windows) from injecting CRLF into the patch
+# payload, which makes `patch -p1` fail to match context lines at build time.
+scripts/susfs_fixes/patches/*.patch -text -whitespace
+
+# The manager-resolution script runs on Linux runners. Keep it LF-only so
+# core.autocrlf=true checkouts (Windows) cannot turn it into a CRLF script.
+scripts/ci/*.sh text eol=lf
