@@ -12,3 +12,8 @@ scripts/susfs_fixes/patches/*.patch -text -whitespace
 # The manager-resolution script runs on Linux runners. Keep it LF-only so
 # core.autocrlf=true checkouts (Windows) cannot turn it into a CRLF script.
 scripts/ci/*.sh text eol=lf
+
+# Same reasoning for the SUSFS patch pipeline: apply.sh appends exact lines such
+# as "CFLAGS_exec.o += -DKSU_NO_PREINIT" to kernel Makefiles and greps for them
+# with anchored patterns, so a CRLF checkout would break those checks.
+scripts/susfs_fixes/*.sh text eol=lf

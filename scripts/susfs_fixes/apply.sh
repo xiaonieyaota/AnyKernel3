@@ -181,12 +181,19 @@ apply_kernelsu_next_susfs() {
 #   - v3.3.1 与 Next v3.4.2 尚无 preinit 目录，10_enable 的该段被跳过，
 #     于是 KSU_NO_PREINIT 从未定义、两个符号既无声明也无定义 ——
 #     fs/exec.c 报 implicit-function-declaration，链接期报 undefined symbol。
-# 这里按「驱动是否存在 preinit 实现」决定是否给 KSU_NO_PREINIT，
-# 使主补丁与驱动保持同一形态，而不是无条件补桩。
+#
+# 关键点：这两个符号的引用点在**内核主树**的 fs/exec.c，属于 fs/ 的编译单元。
+# 只给驱动的 KernelSU/kernel/Kbuild 追加 ccflags-y 完全不起作用（那个变量仅作用于
+# drivers/kernelsu/ 下的对象），链接期照样 undefined symbol: ksu_setup_preinit_file。
+# 因此守卫必须落到 fs/exec.o 自身的编译选项上：向内核主树 fs/Makefile 追加
+#   CFLAGS_exec.o += -DKSU_NO_PREINIT
+# 这样主补丁里三处 #ifndef KSU_NO_PREINIT 同时失效，声明与调用一并消失。
+# 驱动侧 Kbuild 也补一份，覆盖驱动自身按同名宏裁剪分支的情形。
 ensure_preinit_guard() {
   local KSU_DIR="$KERNEL_ROOT/KernelSU"
   local KSU_KERNEL="$KSU_DIR/kernel"
   local KBUILD="$KSU_KERNEL/Kbuild"
+  local FS_MAKEFILE="$KERNEL_ROOT/common/fs/Makefile"
 
   if [ ! -f "$KBUILD" ]; then
     echo "::warning::未找到驱动 Kbuild，跳过 preinit 守卫处理: $KBUILD"
@@ -196,27 +203,35 @@ ensure_preinit_guard() {
   # 驱动已提供 preinit 实现：保持主补丁的 pid==1 前置会话逻辑
   if [ -f "$KSU_KERNEL/preinit/preinit.c" ] \
     && grep -qE '(^|[^a-zA-Z0-9_])ksu_setup_preinit_file[[:space:]]*\(' "$KSU_KERNEL/preinit/preinit.c"; then
-    if grep -q 'KSU_NO_PREINIT' "$KBUILD"; then
-      echo "驱动有 preinit 目录，但 Kbuild 会在缺少 UAPI 头时自行定义 KSU_NO_PREINIT（由驱动决定）"
-    else
-      echo "驱动已提供 preinit 实现，主补丁保留 preinit 会话处理"
+    echo "驱动已提供 preinit 实现，主补丁保留 preinit 会话处理"
+    return 0
+  fi
+
+  # 驱动侧：按驱动自身形态补齐（有 preinit 时由驱动 Kbuild 自行决定）
+  if ! grep -q 'KSU_NO_PREINIT' "$KBUILD"; then
+    printf '\n# injected by GKI SUSFS: driver has no preinit implementation,\n# keep the 50_add exec hooks from referencing absent preinit symbols\nccflags-y += -DKSU_NO_PREINIT\n' >> "$KBUILD"
+    if ! grep -q '^ccflags-y += -DKSU_NO_PREINIT$' "$KBUILD"; then
+      echo "::error::向 $KBUILD 注入 KSU_NO_PREINIT 失败" >&2
+      exit 1
     fi
-    return 0
   fi
 
-  if grep -q 'KSU_NO_PREINIT' "$KBUILD"; then
-    echo "驱动未提供 preinit 实现，且 Kbuild 已自行定义 KSU_NO_PREINIT"
-    return 0
+  # 内核主树：fs/exec.c 才是符号引用点，必须让 exec.o 带上该宏
+  if [ ! -f "$FS_MAKEFILE" ]; then
+    echo "::error::未找到内核 fs/Makefile，无法为 fs/exec.c 注入 KSU_NO_PREINIT: $FS_MAKEFILE" >&2
+    exit 1
   fi
 
-  # 无条件写入：Kbuild 的 KSU_NO_PREINIT 由驱动自身负责（存在 preinit 时
-  # Kbuild 会按 KSU_UAPI_INC 有无自行决定），此处仅补齐缺失的驱动形态
-  printf '\n# injected by GKI SUSFS: driver has no preinit implementation,\n# keep the 50_add exec hooks from referencing absent preinit symbols\nccflags-y += -DKSU_NO_PREINIT\n' >> "$KBUILD"
+  if ! grep -qE '^[[:space:]]*CFLAGS_exec\.o[[:space:]]*\+?=.*KSU_NO_PREINIT' "$FS_MAKEFILE"; then
+    # 追加到文件末尾：fs/Makefile 的 obj-y 赋值与 CFLAGS_* 变量互不干扰，
+    # 放在末尾可避开主补丁刚插入的 obj-$(CONFIG_KSU_SUSFS) 行
+    printf '\n# injected by GKI SUSFS: driver has no preinit implementation,\n# keep the 50_add exec hooks from referencing absent preinit symbols\nCFLAGS_exec.o += -DKSU_NO_PREINIT\n' >> "$FS_MAKEFILE"
+  fi
 
-  if grep -q '^ccflags-y += -DKSU_NO_PREINIT$' "$KBUILD"; then
-    echo "驱动无 preinit 实现，已为 Kbuild 注入 -DKSU_NO_PREINIT（主补丁将跳过 preinit 钩子）"
+  if grep -qE '^[[:space:]]*CFLAGS_exec\.o[[:space:]]*\+?=.*KSU_NO_PREINIT' "$FS_MAKEFILE"; then
+    echo "驱动无 preinit 实现，已为 fs/exec.o 注入 -DKSU_NO_PREINIT（主补丁将跳过 preinit 钩子）"
   else
-    echo "::error::向 $KBUILD 注入 KSU_NO_PREINIT 失败" >&2
+    echo "::error::向 $FS_MAKEFILE 注入 CFLAGS_exec.o 失败" >&2
     exit 1
   fi
 }
