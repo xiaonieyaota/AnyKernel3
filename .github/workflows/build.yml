@@ -36,7 +36,7 @@ on:
         type: string
         default: "正式 (Release)"
       ksu_commit:
-        description: "BakaSU 专用：KernelSU 检出到该提交以对齐官方最新上传构建（留空跟随 main HEAD）"
+        description: "KernelSU 检出到该提交以对齐管理器版本（留空跟随对应变体默认分支）"
         required: false
         type: string
         default: ""
@@ -497,11 +497,11 @@ jobs:
           variant_input="${{ inputs.ksu_variant }}"
 
           case "$variant_input" in
-            "BakaSU")
+            "KernelSU")
               BRANCH="-s main"
               ;;
-            "FinaSU")
-              BRANCH="-s master"
+            "KernelSU-Next")
+              BRANCH="-s dev"
               ;;
             "SukiSU-Nova")
               if [ "${{ inputs.enable_susfs }}" = "false" ]; then
@@ -509,6 +509,12 @@ jobs:
               else
                 BRANCH="builtin"
               fi
+              ;;
+            "BakaSU")
+              BRANCH="-s main"
+              ;;
+            "FinaSU")
+              BRANCH="-s master"
               ;;
             *)
               echo "未知变体: $variant_input" >&2
@@ -541,8 +547,51 @@ jobs:
           KSU_CERT_HASH: ${{ inputs.ksu_cert_hash }}
         run: |
           case "${{ inputs.ksu_variant }}" in
-            "SukiSU-Nova")
-              echo "添加 ${{ inputs.ksu_variant }}..."
+            "KernelSU")
+              echo "添加官方 KernelSU..."
+              git clone https://github.com/tiann/KernelSU.git KernelSU
+              if [ -n "$KSU_COMMIT" ]; then
+                if ! git -C KernelSU checkout --detach "$KSU_COMMIT" 2>/dev/null; then
+                  git -C KernelSU fetch origin "$KSU_COMMIT"
+                  git -C KernelSU checkout --detach "$KSU_COMMIT"
+                fi
+                if [ "$(git -C KernelSU rev-parse HEAD)" != "$KSU_COMMIT" ]; then
+                  echo "::error::KernelSU 检出官方构建提交 $KSU_COMMIT 失败，无法对齐管理器版本"
+                  exit 1
+                fi
+                echo "KernelSU 已检出到官方构建提交 $KSU_COMMIT (KSU 版本 $((30000 + $(git -C KernelSU rev-list --count HEAD))))"
+              fi
+              DRIVER_DIR="$KERNEL_ROOT/common/drivers"
+              ln -sfn "$(realpath --relative-to="$DRIVER_DIR" "$KERNEL_ROOT/KernelSU/kernel")" "$DRIVER_DIR/kernelsu"
+              grep -q "obj-.*CONFIG_KSU.*kernelsu/" "$DRIVER_DIR/Makefile" || \
+                echo 'obj-$(CONFIG_KSU) += kernelsu/' >> "$DRIVER_DIR/Makefile"
+              if ! grep -q 'source "drivers/kernelsu/Kconfig"' "$DRIVER_DIR/Kconfig"; then
+                sed -i "/endmenu/i source \"drivers/kernelsu/Kconfig\"" "$DRIVER_DIR/Kconfig"
+              fi
+              ;;
+            "KernelSU-Next")
+              echo "添加 KernelSU-Next..."
+              git clone https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU
+              if [ -n "$KSU_COMMIT" ]; then
+                if ! git -C KernelSU checkout --detach "$KSU_COMMIT" 2>/dev/null; then
+                  git -C KernelSU fetch origin "$KSU_COMMIT"
+                  git -C KernelSU checkout --detach "$KSU_COMMIT"
+                fi
+                if [ "$(git -C KernelSU rev-parse HEAD)" != "$KSU_COMMIT" ]; then
+                  echo "::error::KernelSU-Next 检出官方构建提交 $KSU_COMMIT 失败，无法对齐管理器版本"
+                  exit 1
+                fi
+                echo "KernelSU-Next 已检出到官方构建提交 $KSU_COMMIT (KSU 版本 $((30000 + $(git -C KernelSU rev-list --count HEAD))))"
+              fi
+              DRIVER_DIR="$KERNEL_ROOT/common/drivers"
+              ln -sfn "$(realpath --relative-to="$DRIVER_DIR" "$KERNEL_ROOT/KernelSU/kernel")" "$DRIVER_DIR/kernelsu"
+              grep -q "obj-.*CONFIG_KSU.*kernelsu/" "$DRIVER_DIR/Makefile" || \
+                echo 'obj-$(CONFIG_KSU) += kernelsu/' >> "$DRIVER_DIR/Makefile"
+              if ! grep -q 'source "drivers/kernelsu/Kconfig"' "$DRIVER_DIR/Kconfig"; then
+                sed -i "/endmenu/i source \"drivers/kernelsu/Kconfig\"" "$DRIVER_DIR/Kconfig"
+              fi
+              ;;
+            "SukiSU-Nova")              echo "添加 ${{ inputs.ksu_variant }}..."
               curl -LSs "https://git.zako.shirkneko.top:20004/shirkneko/SukiSU/raw/branch/main/kernel/setup.sh" | bash -s -- "$BRANCH"
               # 内核侧 KSU 版本来源对齐官方最新上传 Manager 构建：
               # SukiSU-Nova 版本号 = 30000 + main 提交数 + 996
@@ -707,7 +756,7 @@ jobs:
               case "${{ inputs.ksu_variant }}" in
                 SukiSU-Nova) KSU_VERSION=$((30000 + KSU_COUNT + 996)) ;;
                 BakaSU) KSU_VERSION=$((30700 + KSU_COUNT)) ;;
-                FinaSU) KSU_VERSION=$((30000 + KSU_COUNT)) ;;
+                FinaSU|KernelSU|KernelSU-Next) KSU_VERSION=$((30000 + KSU_COUNT)) ;;
               esac
             fi
           fi
@@ -1671,7 +1720,8 @@ jobs:
             echo 'CONFIG_KSU_FULL_NAME_FORMAT="%TAG_NAME%-%COMMIT_SHA%@%REPO_NAME%"' >> "$DEFCONFIG"
           fi
 
-          if [ "${{ inputs.ksu_variant }}" == "SukiSU-Nova" ] || [ "${{ inputs.ksu_variant }}" == "BakaSU" ]; then
+          # KPM 仅 SukiSU-Nova 支持（BakaSU 已移除该能力）
+          if [ "${{ inputs.ksu_variant }}" == "SukiSU-Nova" ]; then
             if [ "${{ inputs.use_kpm }}" == "true" ]; then
               if grep -RqsE '^[[:space:]]*config[[:space:]]+KPM([[:space:]]|$)' common KernelSU 2>/dev/null; then
                 echo "CONFIG_KPM=y" >> "$DEFCONFIG"
@@ -1686,12 +1736,12 @@ jobs:
                 exit 1
               fi
             fi
-          elif [ "${{ inputs.ksu_variant }}" == "FinaSU" ]; then
+          else
             if [ "${{ inputs.use_kpm }}" == "true" ]; then
-              echo "::warning title=KPM 不适用::FinaSU 不支持 KPM，已忽略该选项继续构建"
+              echo "::warning title=KPM 不适用::${{ inputs.ksu_variant }} 不支持 KPM，已忽略该选项继续构建"
               if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
                 echo "" >> "$GITHUB_STEP_SUMMARY"
-                echo "> ⏭️ **KPM** 已忽略：FinaSU 变体不支持 KPM（构建未中断）" >> "$GITHUB_STEP_SUMMARY"
+                echo "> ⏭️ **KPM** 已忽略：${{ inputs.ksu_variant }} 变体不支持 KPM（构建未中断）" >> "$GITHUB_STEP_SUMMARY"
               fi
             fi
           fi

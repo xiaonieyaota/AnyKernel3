@@ -12,6 +12,8 @@ on:
         required: true
         type: choice
         options:
+          - KernelSU
+          - KernelSU-Next
           - SukiSU-Nova
           - BakaSU
           - FinaSU

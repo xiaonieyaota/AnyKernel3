@@ -92,6 +92,150 @@ verify_finasu_native_susfs() {
   echo "FinaSU 原生 SUSFS 集成校验通过"
 }
 
+apply_official_kernelsu_susfs() {
+  local KSU_DIR="$KERNEL_ROOT/KernelSU"
+  local UPSTREAM_PATCH="$SUSFS4KSU/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+  local RELEASE_PATCH="$SCRIPT_DIR/patches/10_enable_susfs_for_kernelsu-v3.3.1.patch"
+  local KSU_TAG=""
+  local DRIVER_PATCH="$UPSTREAM_PATCH"
+
+  if [ ! -d "$KSU_DIR" ] || [ ! -f "$UPSTREAM_PATCH" ]; then
+    echo "::error::官方 KernelSU 或 SUSFS 驱动侧补丁缺失: $UPSTREAM_PATCH" >&2
+    exit 1
+  fi
+  if [ ! -f "$RELEASE_PATCH" ]; then
+    echo "::error::官方 KernelSU v3.3.1 SUSFS 兼容补丁缺失: $RELEASE_PATCH" >&2
+    exit 1
+  fi
+
+  if KSU_TAG=$(git -C "$KSU_DIR" describe --tags --exact-match HEAD 2>/dev/null); then
+    echo "官方 KernelSU 当前检出标签: $KSU_TAG"
+  fi
+  if [ "$KSU_TAG" = "v3.3.1" ]; then
+    DRIVER_PATCH="$RELEASE_PATCH"
+  fi
+
+  if ! (cd "$KSU_DIR" && patch -p1 --dry-run < "$DRIVER_PATCH" >/dev/null 2>&1); then
+    if [ "$DRIVER_PATCH" = "$RELEASE_PATCH" ]; then
+      DRIVER_PATCH="$UPSTREAM_PATCH"
+    else
+      DRIVER_PATCH="$RELEASE_PATCH"
+    fi
+    if ! (cd "$KSU_DIR" && patch -p1 --dry-run < "$DRIVER_PATCH" >/dev/null 2>&1); then
+      echo "::error::官方 KernelSU SUSFS 驱动侧补丁无法应用于当前源码" >&2
+      exit 1
+    fi
+  fi
+
+  echo "应用官方 KernelSU 的 SUSFS 驱动侧补丁: $(basename "$DRIVER_PATCH")"
+  (cd "$KSU_DIR" && patch -p1 --no-backup-if-mismatch < "$DRIVER_PATCH")
+}
+
+apply_kernelsu_next_susfs() {
+  local KSU_DIR="$KERNEL_ROOT/KernelSU"
+  local NEXT_TAG=""
+  local NEXT_PATCH="$SCRIPT_DIR/patches/10_enable_susfs_for_kernelsu-next-dev.patch"
+  local RELEASE_PATCH="$SCRIPT_DIR/patches/10_enable_susfs_for_kernelsu-next-v3.4.2.patch"
+
+  if [ ! -d "$KSU_DIR" ]; then
+    echo "::error::KernelSU-Next 源码目录缺失: $KSU_DIR" >&2
+    exit 1
+  fi
+  if [ ! -f "$NEXT_PATCH" ] || [ ! -f "$RELEASE_PATCH" ]; then
+    echo "::error::KernelSU-Next SUSFS 兼容补丁缺失" >&2
+    exit 1
+  fi
+
+  if NEXT_TAG=$(git -C "$KSU_DIR" describe --tags --exact-match HEAD 2>/dev/null); then
+    echo "KernelSU-Next 当前检出标签: $NEXT_TAG"
+  fi
+  if [ "$NEXT_TAG" = "v3.4.2" ]; then
+    NEXT_PATCH="$RELEASE_PATCH"
+  fi
+
+  if ! (cd "$KSU_DIR" && patch -p1 --dry-run < "$NEXT_PATCH" >/dev/null 2>&1); then
+    if [ "$NEXT_PATCH" = "$RELEASE_PATCH" ]; then
+      NEXT_PATCH="$SCRIPT_DIR/patches/10_enable_susfs_for_kernelsu-next-dev.patch"
+    else
+      NEXT_PATCH="$RELEASE_PATCH"
+    fi
+    if ! (cd "$KSU_DIR" && patch -p1 --dry-run < "$NEXT_PATCH" >/dev/null 2>&1); then
+      echo "::error::KernelSU-Next SUSFS 兼容补丁无法应用于当前源码" >&2
+      exit 1
+    fi
+  fi
+
+  echo "应用 KernelSU-Next SUSFS 兼容补丁: $(basename "$NEXT_PATCH")"
+  (cd "$KSU_DIR" && patch -p1 --no-backup-if-mismatch < "$NEXT_PATCH")
+}
+
+# 内核侧主补丁 50_add 在 fs/exec.c 里以
+#   #ifndef KSU_NO_PREINIT
+#   extern int ksu_setup_preinit_file(...);
+#   extern int ksu_preinit_handle_post_execveat(...);
+#   #endif
+# 声明两个 preinit 入口，并在 do_execveat_common 内按 pid==1 调用。
+# 这两个函数由驱动侧 10_enable 补丁的 kernel/preinit/preinit.c 段提供；而该段只在
+# 上游存在 kernel/preinit/ 目录时才可应用：
+#   - 官方 KernelSU / KernelSU-Next 的 dev(main) HEAD 有 preinit，正常注入；
+#   - v3.3.1 与 Next v3.4.2 尚无 preinit 目录，10_enable 的该段被跳过，
+#     于是 KSU_NO_PREINIT 从未定义、两个符号既无声明也无定义 ——
+#     fs/exec.c 报 implicit-function-declaration，链接期报 undefined symbol。
+#
+# 关键点：这两个符号的引用点在**内核主树**的 fs/exec.c，属于 fs/ 的编译单元。
+# 只给驱动的 KernelSU/kernel/Kbuild 追加 ccflags-y 完全不起作用（那个变量仅作用于
+# drivers/kernelsu/ 下的对象），链接期照样 undefined symbol: ksu_setup_preinit_file。
+# 因此守卫必须落到 fs/exec.o 自身的编译选项上：向内核主树 fs/Makefile 追加
+#   CFLAGS_exec.o += -DKSU_NO_PREINIT
+# 这样主补丁里三处 #ifndef KSU_NO_PREINIT 同时失效，声明与调用一并消失。
+# 驱动侧 Kbuild 也补一份，覆盖驱动自身按同名宏裁剪分支的情形。
+ensure_preinit_guard() {
+  local KSU_DIR="$KERNEL_ROOT/KernelSU"
+  local KSU_KERNEL="$KSU_DIR/kernel"
+  local KBUILD="$KSU_KERNEL/Kbuild"
+  local FS_MAKEFILE="$KERNEL_ROOT/common/fs/Makefile"
+
+  if [ ! -f "$KBUILD" ]; then
+    echo "::warning::未找到驱动 Kbuild，跳过 preinit 守卫处理: $KBUILD"
+    return 0
+  fi
+
+  # 驱动已提供 preinit 实现：保持主补丁的 pid==1 前置会话逻辑
+  if [ -f "$KSU_KERNEL/preinit/preinit.c" ] \
+    && grep -qE '(^|[^a-zA-Z0-9_])ksu_setup_preinit_file[[:space:]]*\(' "$KSU_KERNEL/preinit/preinit.c"; then
+    echo "驱动已提供 preinit 实现，主补丁保留 preinit 会话处理"
+    return 0
+  fi
+
+  # 驱动侧：按驱动自身形态补齐（有 preinit 时由驱动 Kbuild 自行决定）
+  if ! grep -q 'KSU_NO_PREINIT' "$KBUILD"; then
+    printf '\n# injected by GKI SUSFS: driver has no preinit implementation,\n# keep the 50_add exec hooks from referencing absent preinit symbols\nccflags-y += -DKSU_NO_PREINIT\n' >> "$KBUILD"
+    if ! grep -q '^ccflags-y += -DKSU_NO_PREINIT$' "$KBUILD"; then
+      echo "::error::向 $KBUILD 注入 KSU_NO_PREINIT 失败" >&2
+      exit 1
+    fi
+  fi
+
+  # 内核主树：fs/exec.c 才是符号引用点，必须让 exec.o 带上该宏
+  if [ ! -f "$FS_MAKEFILE" ]; then
+    echo "::error::未找到内核 fs/Makefile，无法为 fs/exec.c 注入 KSU_NO_PREINIT: $FS_MAKEFILE" >&2
+    exit 1
+  fi
+
+  if ! grep -qE '^[[:space:]]*CFLAGS_exec\.o[[:space:]]*\+?=.*KSU_NO_PREINIT' "$FS_MAKEFILE"; then
+    # 追加到文件末尾：fs/Makefile 的 obj-y 赋值与 CFLAGS_* 变量互不干扰，
+    # 放在末尾可避开主补丁刚插入的 obj-$(CONFIG_KSU_SUSFS) 行
+    printf '\n# injected by GKI SUSFS: driver has no preinit implementation,\n# keep the 50_add exec hooks from referencing absent preinit symbols\nCFLAGS_exec.o += -DKSU_NO_PREINIT\n' >> "$FS_MAKEFILE"
+  fi
+
+  if grep -qE '^[[:space:]]*CFLAGS_exec\.o[[:space:]]*\+?=.*KSU_NO_PREINIT' "$FS_MAKEFILE"; then
+    echo "驱动无 preinit 实现，已为 fs/exec.o 注入 -DKSU_NO_PREINIT（主补丁将跳过 preinit 钩子）"
+  else
+    echo "::error::向 $FS_MAKEFILE 注入 CFLAGS_exec.o 失败" >&2
+    exit 1
+  fi
+}
+
 case "$KSU_VARIANT" in
   "SukiSU-Nova"|"BakaSU")
     echo "SukiSU-Nova/BakaSU 使用内置 SUSFS 支持"
@@ -99,6 +243,16 @@ case "$KSU_VARIANT" in
   "FinaSU")
     echo "FinaSU 使用树内原生 SUSFS 集成（驱动侧不打补丁，形态同 SukiSU-Nova/BakaSU）"
     verify_finasu_native_susfs
+    ;;
+  "KernelSU")
+    echo "官方 KernelSU 使用 GitLab SUSFS 手工钩子模型"
+    apply_official_kernelsu_susfs
+    ensure_preinit_guard
+    ;;
+  "KernelSU-Next")
+    echo "KernelSU-Next 使用 GitLab SUSFS 手工钩子模型（含 Next 兼容补丁）"
+    apply_kernelsu_next_susfs
+    ensure_preinit_guard
     ;;
 esac
 
