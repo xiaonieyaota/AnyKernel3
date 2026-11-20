@@ -66,7 +66,7 @@ on:
         type: string
         default: "仅上传 AnyKernel3.zip"
       version:
-        description: "自定义版本名（留空=默认）"
+        description: "自定义内核版本名（留空=默认）"
         required: false
         type: string
         default: ""
@@ -145,7 +145,7 @@ jobs:
           case "${{ inputs.kernelsu_variant }}" in
             "KernelSU")      KSU_REPO="https://github.com/tiann/KernelSU.git" ;;
             "KernelSU-Next") KSU_REPO="https://github.com/KernelSU-Next/KernelSU-Next.git" ;;
-            "SukiSU")        KSU_REPO="https://github.com/SukiSU-Ultra/SukiSU-Ultra.git" ;;
+            "SukiSU-Nova")   KSU_REPO="https://git.zako.shirkneko.top:20004/shirkneko/SukiSU.git" ;;
             "BakaSU")        KSU_REPO="https://github.com/Baka-SU/BakaSU.git" ;;
             "FinaSU")        KSU_REPO="https://github.com/LyraVoid/FinaSU.git" ;;
             *) echo "Unknown variant: ${{ inputs.kernelsu_variant }}"; exit 1 ;;
@@ -158,8 +158,8 @@ jobs:
           # 计算KSU版本号
           KSU_GIT_VERSION=$(git rev-list --count HEAD)
 
-          if [ "${{ inputs.kernelsu_variant }}" == "SukiSU" ]; then
-            KSU_VERSION=$((40000 + KSU_GIT_VERSION - 2815))
+          if [ "${{ inputs.kernelsu_variant }}" == "SukiSU-Nova" ]; then
+            KSU_VERSION=$((30000 + KSU_GIT_VERSION + 996))
           elif [ "${{ inputs.kernelsu_variant }}" == "BakaSU" ]; then
             KSU_VERSION=$((30700 + KSU_GIT_VERSION))
           else
@@ -182,10 +182,11 @@ jobs:
       # 正式：管理器取官方「正式版」Release（prerelease=false，标签提交 + 该 Release 的 APK）；
       #       上游没有正式版 Release 时（如 BakaSU 只有 rc 预发布），
       #       改用官方默认分支最新上传构建，内核仍锁定该构建提交
-      # 最新：管理器取与默认分支 HEAD 版本一致的最新构建（不限分支），内核锁定该 HEAD；
-      #       BakaSU/FinaSU 直接取 build-manager.yml 最新构建，内核锁定该构建提交
+      # 最新：SukiSU-Nova 取新上游的 manager-ci Release，按 APK 版本对齐 main 提交；
+      #       BakaSU/FinaSU 取 build-manager.yml 最新构建，内核锁定该构建提交
       - name: 选择管理器来源（构建通道）
         id: channel
+        if: inputs.kernelsu_variant != 'SukiSU-Nova'
         run: |
 
           CHANNEL_RAW="${{ inputs.build_channel }}"
@@ -198,7 +199,6 @@ jobs:
           case "${{ inputs.kernelsu_variant }}" in
             "KernelSU") REPO="tiann/KernelSU";         PREF="universal" ;;
             "KernelSU-Next") REPO="KernelSU-Next/KernelSU-Next"; PREF="universal" ;;
-            "SukiSU") REPO="SukiSU-Ultra/SukiSU-Ultra"; PREF="universal" ;;
             "BakaSU") REPO="Baka-SU/BakaSU";           PREF="arm64" ;;
             "FinaSU") REPO="LyraVoid/FinaSU";          PREF="universal" ;;
             *) echo "::error::未知变体"; exit 1 ;;
@@ -260,6 +260,55 @@ jobs:
                   [ $p.tag_name, ( $p.prerelease | tostring ), $p._apks[0].name, $p._apks[0].browser_download_url ] | @tsv
                 else empty end
             ')
+          fi
+
+          # Release 列表接口在部分仓库（如刚改名/迁移后）会返回空数组，而
+          # /releases/latest 仍可正常返回；latest 语义即"最新非预发布版"，
+          # 此时退回 latest，避免把"有正式版"误判成"无正式版"而落到 CI 构建
+          if [ -z "$PICK" ]; then
+            LATEST_JSON=""
+            for ATTEMPT in 1 2 3; do
+              LATEST_CODE=$(curl -s -o /tmp/rel_latest.json -w '%{http_code}' --max-time 30 \
+                -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/$REPO/releases/latest") || LATEST_CODE=000
+              if [ "$LATEST_CODE" = "200" ]; then
+                LATEST_JSON=$(cat /tmp/rel_latest.json)
+                break
+              fi
+              if [ "$LATEST_CODE" = "404" ]; then
+                echo "$REPO 没有 latest Release（上游只有预发布版或未发布）"
+                break
+              fi
+              echo "获取 $REPO 的 latest Release 失败（HTTP $LATEST_CODE），重试 ($ATTEMPT/3)..."
+              sleep 5
+            done
+            if [ -n "$LATEST_JSON" ]; then
+              PICK=$(printf '%s' "$LATEST_JSON" | jq -r --arg pref "$PREF" '
+                [ . ]
+                | map(select((.draft | not) and (.prerelease | not)))
+                | map(. + {
+                    _apks: [ .assets[]?
+                             | select(.name | test("\\.apk$"; "i"))
+                             | select(.name | test("(?i)debug|spoofed") | not) ]
+                  })
+                | map(. + {
+                    _apks: (._apks | sort_by(
+                      if   (.name | test("(?i)" + $pref)) then 0
+                      elif (.name | test("(?i)universal")) then 1
+                      elif (.name | test("(?i)arm64")) then 2
+                      else 3 end))
+                  })
+                | map(select((._apks | length) > 0))
+                | .[0] as $p
+                | if $p then
+                    [ $p.tag_name, ( $p.prerelease | tostring ), $p._apks[0].name, $p._apks[0].browser_download_url ] | @tsv
+                  else empty end
+              ')
+              if [ -n "$PICK" ]; then
+                echo "Release 列表为空，改用 latest 接口：$PICK"
+              fi
+            fi
           fi
 
           if [ -z "$PICK" ]; then
@@ -478,7 +527,7 @@ jobs:
             echo "| \`CVE-2026-43499\` 修复 | $(flag "${{ inputs.cve_2026_43499_patch }}") |"
             echo "| 兼容跳过 | $(flag "${{ inputs.skip_incompatible }}") |"
             echo "| 产物上传模式 | ${{ inputs.artifact_upload_mode }} |"
-            echo "| 自定义版本名 | ${VER_ROW} |"
+            echo "| 自定义内核版本名 | ${VER_ROW} |"
             echo "| 自定义构建时间 | ${TIME_ROW} |"
           } >> "$GITHUB_STEP_SUMMARY"
 

@@ -2,7 +2,7 @@
 # 管理器获取脚本（从 get-manager.yml 抽出，避免 GitHub 单 step 表达式 21000 字符上限）
 #
 # 输入（环境变量）：
-#   VARIANT_IN  KSU 变体名（SukiSU / BakaSU / FinaSU / KernelSU / KernelSU-Next）
+#   VARIANT_IN  KSU 变体名（SukiSU-Nova / BakaSU / FinaSU / KernelSU / KernelSU-Next）
 #   CHANNEL_IN  构建通道原文（正式 (Release) / 最新 (HEAD)，兜底解析用）
 #   GH_TOKEN    GitHub token
 #   其余 MANAGER_SOURCE / REL_TAG / REL_COMMIT / REL_APK_NAME / REL_APK_URL /
@@ -15,10 +15,15 @@
 
 VARIANT="${VARIANT_IN}"
 
+# SukiSU-Nova 走新上游自带的滚动管理器（manager-ci）流程
+if [ "$VARIANT" = "SukiSU-Nova" ]; then
+  bash "$GITHUB_WORKSPACE/scripts/sukisu_manager.sh" "$CHANNEL_IN" KernelSU
+  exit 0
+fi
+
 case "$VARIANT" in
   "KernelSU") REPO="tiann/KernelSU";         KSUM="manager"; EXPECTED_BRANCH="main" ;;
   "KernelSU-Next") REPO="KernelSU-Next/KernelSU-Next"; KSUM="manager"; EXPECTED_BRANCH="dev" ;;
-  "SukiSU") REPO="SukiSU-Ultra/SukiSU-Ultra"; KSUM="manager"; EXPECTED_BRANCH="main" ;;
   "BakaSU") REPO="Baka-SU/BakaSU";           KSUM="manager"; EXPECTED_BRANCH="main" ;;
   "FinaSU") REPO="LyraVoid/FinaSU";          KSUM="manager"; EXPECTED_BRANCH="master" ;;
   *) echo "::error::未知变体: $VARIANT"; exit 1 ;;
@@ -56,7 +61,6 @@ if [ "${MANAGER_SOURCE:-ci}" = "release" ] && [ -n "${REL_APK_URL:-}" ]; then
       REL_COUNT=$(git -C KernelSU rev-list --count "$REL_COMMIT" 2>/dev/null || echo "")
       if [ -n "$REL_COUNT" ]; then
         case "$VARIANT" in
-          SukiSU) REL_KSU_VERSION=$((40000 + REL_COUNT - 2815)) ;;
           BakaSU) REL_KSU_VERSION=$((30700 + REL_COUNT)) ;;
           FinaSU|KernelSU|KernelSU-Next) REL_KSU_VERSION=$((30000 + REL_COUNT)) ;;
         esac
@@ -156,7 +160,7 @@ if [ "$VARIANT" == "FinaSU" ] && [ "${PIN_MODE:-pin}" != "head" ]; then
   exit 0
 fi
 
-# ---------- 最新通道：官方 CI 构建的管理器（SukiSU / BakaSU / FinaSU） ----------
+# ---------- 最新通道：官方 CI 构建的管理器（SukiSU-Nova / BakaSU / FinaSU） ----------
 get_manager_artifacts() {
   local artifacts="$1"
   if [[ "$VARIANT" == "FinaSU" || "$VARIANT" == "KernelSU" || "$VARIANT" == "KernelSU-Next" ]]; then
@@ -176,7 +180,6 @@ get_manager_artifacts() {
 # 版本号与管理器 versionCode 同源（提交数 + 偏移），用于按版本挑选构建
 ksu_version_of() {
   case "$1" in
-    SukiSU) echo $((40000 + $2 - 2815)) ;;
     BakaSU) echo $((30700 + $2)) ;;
     FinaSU|KernelSU|KernelSU-Next) echo $((30000 + $2)) ;;
   esac
@@ -249,7 +252,7 @@ for DAYS in 0 7 30 90 365; do
       CREATED=$(printf '%s' "$RUNS" | jq -r ".workflow_runs[$INDEX].created_at")
       # 正式通道：只认官方默认分支上传的构建（push 与 workflow_dispatch 均可，
       # 手动触发常用于正式上传前测试），跳过 PR / 其他分支构建
-      #（SukiSU/BakaSU 为 main，FinaSU 为 master）
+      #（SukiSU-Nova/BakaSU 为 main，FinaSU 为 master）
       # 最新通道：接受任意分支的构建（跳过 PR 构建），再按版本与 HEAD 匹配排序
       if [ "${PIN_MODE:-pin}" = "head" ]; then
         if [ "$EVENT" != "push" ] && [ "$EVENT" != "workflow_dispatch" ]; then
@@ -390,7 +393,6 @@ PIN_COUNT=$(git -C KernelSU rev-list --count "$MANAGER_HEAD_SHA" 2>/dev/null || 
 if [ -n "$PIN_COUNT" ]; then
   case "$VARIANT" in
     BakaSU) PINNED_KSU_VERSION=$((30700 + PIN_COUNT)) ;;
-    SukiSU) PINNED_KSU_VERSION=$((40000 + PIN_COUNT - 2815)) ;;
     FinaSU|KernelSU|KernelSU-Next) PINNED_KSU_VERSION=$((30000 + PIN_COUNT)) ;;
     *)      PINNED_KSU_VERSION="" ;;
   esac

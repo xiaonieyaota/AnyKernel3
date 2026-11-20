@@ -66,7 +66,7 @@ on:
           - "237 (2025-06)"
           - "240 (2025-09)"
           - "246 (2025-12)"
-          - "lts (5.10.272)"
+          - "lts (5.10.274)"
 
       sub_level_a13_5_10:
         description: "Android 13-5.10 子版本 (选择后自动匹配安全补丁级别；仅 Android 13 + 内核 5.10 时生效)"
@@ -115,7 +115,7 @@ on:
           - "252 (2026-04)"
           - "257 (2026-07)"
           - "269 (2026-10)"
-          - "lts (5.10.272)"
+          - "lts (5.10.274)"
 
       sub_level_a13_5_15:
         description: "Android 13-5.15 子版本 (选择后自动匹配安全补丁级别；仅 Android 13 + 内核 5.15 时生效)"
@@ -159,7 +159,7 @@ on:
           - "185 (2025-07)"
           - "189 (2025-09)"
           - "194 (2025-12)"
-          - "lts (5.15.223)"
+          - "lts (5.15.225)"
 
       sub_level_a14_5_15:
         description: "Android 14-5.15 子版本 (选择后自动匹配安全补丁级别；仅 Android 14 + 内核 5.15 时生效)"
@@ -191,7 +191,7 @@ on:
           - "202 (2026-04)"
           - "208 (2026-07)"
           - "216 (2026-10)"
-          - "lts (5.15.223)"
+          - "lts (5.15.225)"
 
       sub_level_a14_6_1:
         description: "Android 14-6.1 子版本 (选择后自动匹配安全补丁级别；仅 Android 14 + 内核 6.1 时生效)"
@@ -232,7 +232,7 @@ on:
           - "162 (2026-03)"
           - "172 (2026-06)"
           - "176 (2026-09)"
-          - "lts (6.1.182)"
+          - "lts (6.1.192)"
 
       sub_level_a15_6_6:
         description: "Android 15-6.6 子版本 (选择后自动匹配安全补丁级别；仅 Android 15 + 内核 6.6 时生效)"
@@ -258,7 +258,7 @@ on:
           - "127 (2026-04)"
           - "139 (2026-07)"
           - "143 (2026-10)"
-          - "lts (6.6.144)"
+          - "lts (6.6.162)"
 
       sub_level_a16_6_12:
         description: "Android 16-6.12 子版本 (选择后自动匹配安全补丁级别；仅 Android 16 + 内核 6.12 时生效)"
@@ -275,7 +275,7 @@ on:
           - "69 (2026-03)"
           - "81 (2026-06)"
           - "92 (2026-09)"
-          - "lts (6.12.97)"
+          - "lts (6.12.117)"
 
       sub_level_a17_6_18:
         description: "Android 17-6.18 子版本 (选择后自动匹配安全补丁级别；仅 Android 17 + 内核 6.18 时生效)"
@@ -287,7 +287,7 @@ on:
           - "20 (2026-04)"
           - "21 (2026-06)"
           - "32 (2026-09)"
-          - "lts (6.18.39)"
+          - "lts (6.18.63)"
 
       # ==================== KernelSU 配置 ====================
       kernelsu_variant:
@@ -297,13 +297,13 @@ on:
         options:
           - KernelSU
           - KernelSU-Next
-          - SukiSU
+          - SukiSU-Nova
           - BakaSU
           - FinaSU
         default: FinaSU
 
       build_channel:
-        description: "构建通道（正式=官方 Release 发行版，最新=上游最新提交）"
+        description: "构建管理器通道"
         required: false
         type: choice
         options:
@@ -313,7 +313,7 @@ on:
 
       # ==================== 可选配置 ====================
       version:
-        description: "自定义版本名 (可选)"
+        description: "自定义内核版本名"
         required: false
         type: string
       build_time:
@@ -324,7 +324,7 @@ on:
 
       # ==================== 选项配置 ====================
       use_kpm:
-        description: "KPM 功能（仅 SukiSU 支持，开启未修补）"
+        description: "KPM 功能（仅SukiSU-Nova支持，开启未修补）"
         required: false
         type: boolean
         default: false

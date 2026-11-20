@@ -39,13 +39,13 @@ on:
         options:
           - KernelSU
           - KernelSU-Next
-          - SukiSU
+          - SukiSU-Nova
           - BakaSU
           - FinaSU
         default: FinaSU
 
       build_channel:
-        description: "构建通道（正式=官方 Release 发行版，最新=上游最新提交）"
+        description: "构建管理器通道"
         type: choice
         options:
           - "正式 (Release)"
@@ -54,7 +54,7 @@ on:
 
       # ==================== 可选配置 ====================
       version:
-        description: "自定义版本名 (可选)"
+        description: "自定义内核版本名"
         type: string
         default: ""
         required: false
@@ -65,7 +65,7 @@ on:
         required: false
       # ==================== 选项配置 ====================
       use_kpm:
-        description: "KPM 功能（仅 SukiSU 支持，开启未修补）"
+        description: "KPM 功能（仅SukiSU-Nova支持，开启未修补）"
         type: boolean
         default: false
       droidspaces:
@@ -581,7 +581,7 @@ jobs:
           case "${{ inputs.kernelsu_variant }}" in
             "KernelSU")      KSU_NAME="KernelSU" ;;
             "KernelSU-Next") KSU_NAME="KernelSU-Next" ;;
-            "SukiSU")        KSU_NAME="SukiSU" ;;
+            "SukiSU-Nova")   KSU_NAME="SukiSU-Nova" ;;
             "BakaSU")        KSU_NAME="BakaSU" ;;
             "FinaSU")        KSU_NAME="FinaSU" ;;
           esac
@@ -618,12 +618,8 @@ jobs:
           # Hook 类型
           echo "HOOK_TYPE=SUSFS Inline Hooks" >> $GITHUB_ENV
 
-          # Mount 类型（FinaSU 使用 metamodule 模块架构）
-          if [ "${{ inputs.kernelsu_variant }}" == "FinaSU" ]; then
-            echo "MOUNT_TYPE=Metamodule" >> $GITHUB_ENV
-          else
-            echo "MOUNT_TYPE=Magic Mount" >> $GITHUB_ENV
-          fi
+          # NoMount 挂载元模块
+          echo "NOMOUNT_STATUS=${{ inputs.use_nomount && '启用' || '未开启' }}" >> $GITHUB_ENV
 
           echo "CHANNEL_TAG=${{ needs.get-manager.outputs.channelTag }}" >> $GITHUB_ENV
           echo "CHANNEL_NAME=${{ inputs.build_channel }}" >> $GITHUB_ENV
@@ -639,7 +635,7 @@ jobs:
               echo "KSU_VER=-" >> $GITHUB_ENV
               echo "SUS_VER=未集成" >> $GITHUB_ENV
               echo "HOOK_TYPE=无" >> $GITHUB_ENV
-              echo "MOUNT_TYPE=无" >> $GITHUB_ENV
+              echo "NOMOUNT_STATUS=未开启" >> $GITHUB_ENV
               echo "BRANCH_INFO=-" >> $GITHUB_ENV
               echo "RELEASE_NAME=GKI Kernel: 纯净版（无 KernelSU / SUSFS）" >> $GITHUB_ENV
               echo "RELEASE_HEADER=**纯净 GKI 内核**（未集成 KernelSU / SUSFS）" >> $GITHUB_ENV
@@ -687,7 +683,7 @@ jobs:
           case "${{ inputs.kernelsu_variant }}" in
             "KernelSU") BRANCH="main" ;;
             "KernelSU-Next") BRANCH="dev" ;;
-            "SukiSU")
+            "SukiSU-Nova")
               if [ "${{ inputs.ksu_mode }}" = "关闭" ]; then
                 BRANCH="builtin"
               else
@@ -706,19 +702,19 @@ jobs:
       - name: 获取 KernelSU 提交信息
         run: |
           case "${{ inputs.kernelsu_variant }}" in
-            "KernelSU") REPO_URL="https://github.com/tiann/KernelSU.git"; REPO_URL2="tiann/KernelSU" ;;
-            "KernelSU-Next") REPO_URL="https://github.com/KernelSU-Next/KernelSU-Next.git"; REPO_URL2="KernelSU-Next/KernelSU-Next" ;;
-            "SukiSU") REPO_URL="https://github.com/SukiSU-Ultra/SukiSU-Ultra.git"; REPO_URL2="SukiSU-Ultra/SukiSU-Ultra" ;;
-            "BakaSU") REPO_URL="https://github.com/Baka-SU/BakaSU.git"; REPO_URL2="Baka-SU/BakaSU" ;;
-            "FinaSU") REPO_URL="https://github.com/LyraVoid/FinaSU.git"; REPO_URL2="LyraVoid/FinaSU" ;;
+            "KernelSU") REPO_URL="https://github.com/tiann/KernelSU.git"; REPO_URL2="https://github.com/tiann/KernelSU" ;;
+            "KernelSU-Next") REPO_URL="https://github.com/KernelSU-Next/KernelSU-Next.git"; REPO_URL2="https://github.com/KernelSU-Next/KernelSU-Next" ;;
+            "SukiSU-Nova") REPO_URL="https://git.zako.shirkneko.top:20004/shirkneko/SukiSU.git"; REPO_URL2="https://git.zako.shirkneko.top:20004/shirkneko/SukiSU" ;;
+            "BakaSU") REPO_URL="https://github.com/Baka-SU/BakaSU.git"; REPO_URL2="https://github.com/Baka-SU/BakaSU" ;;
+            "FinaSU") REPO_URL="https://github.com/LyraVoid/FinaSU.git"; REPO_URL2="https://github.com/LyraVoid/FinaSU" ;;
           esac
 
-          if [ "${{ inputs.kernelsu_variant }}" = "SukiSU" ] && [ -f "config/config" ]; then
+          if [ "${{ inputs.kernelsu_variant }}" = "SukiSU-Nova" ] && [ -f "config/config" ]; then
             CUSTOM_ENABLED=$(grep "^custom=" config/config | cut -d'=' -f2)
             CUSTOM_COMMIT=$(grep "^sukisu=" config/config | cut -d'=' -f2)
             if [ "$CUSTOM_ENABLED" = "true" ] && [ -n "$CUSTOM_COMMIT" ]; then
               KSU_REF="$CUSTOM_COMMIT"
-              KSU_URL="https://github.com/$REPO_URL2/commit/$CUSTOM_COMMIT"
+              KSU_URL="$REPO_URL2/commit/$CUSTOM_COMMIT"
               echo "BRANCH_INFO=custom" >> $GITHUB_ENV
             fi
           fi
@@ -731,7 +727,7 @@ jobs:
             fi
             if [ -n "$COMMIT_HASH" ]; then
               KSU_REF=$COMMIT_HASH
-              KSU_URL="https://github.com/$REPO_URL2/releases/tag/$CHANNEL_TAG"
+              KSU_URL="$REPO_URL2/releases/tag/$CHANNEL_TAG"
               echo "BRANCH_INFO=release/${CHANNEL_TAG}" >> $GITHUB_ENV
             fi
           fi
@@ -739,7 +735,7 @@ jobs:
           if [ -z "${KSU_REF:-}" ]; then
             COMMIT_HASH=$(git ls-remote $REPO_URL refs/heads/${KSU_BRANCH:-main} | awk '{ print $1 }')
             KSU_REF=$COMMIT_HASH
-            KSU_URL="https://github.com/$REPO_URL2/commit/$COMMIT_HASH"
+            KSU_URL="$REPO_URL2/commit/$COMMIT_HASH"
           fi
 
           echo "KSU_REF=$KSU_REF" >> $GITHUB_ENV
@@ -845,12 +841,12 @@ jobs:
           | KernelSU 分支 | $BRANCH_INFO |
           | SUSFS | $SUS_VER |
           | Hook 类型 | $HOOK_TYPE |
-          | 挂载方式 | $MOUNT_TYPE |
           | LTO | thin |
           | ZRAM / LZ4KD | $LZ4_STATUS |
           | BBG 基带保护 | $BBG_STATUS |
           | 网络增强 (BBRv3 / IPSet / Qdisc / CIFS) | $NET_ENHANCE_STATUS |
           | Re-Kernel 驱动 | $REKERNEL_STATUS |
+          | NoMount 挂载元模块 | $NOMOUNT_STATUS |
           | KPM | $KPM_STATUS |
           | Droidspaces 容器支持 | $DROIDSPACES_STATUS |
 
@@ -864,6 +860,7 @@ jobs:
           | \`*.img\` | boot、vendor_boot 等镜像文件 |
           | \`*.apk\` | Root 管理器 |
           | \`susfs-*.zip\` | SUSFS 配套模块 |
+          | \`nomount-*.zip\` | NoMount 配套元模块 |
 
           > [!IMPORTANT]
           > 刷入前请备份原厂 Boot 镜像。
